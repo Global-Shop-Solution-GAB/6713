@@ -1,0 +1,345 @@
+﻿Program.Sub.Preflight.Start
+v.Global.sUser.Declare
+v.Global.sFromBin.Declare
+v.Global.sToBin.Declare
+v.Global.iPart.Declare
+v.Global.sTopMessage.Declare
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'BN May 2022
+'GS Mobile Custom Bulk Bin to Bin transfer with a From Default Bin and a To Bin, and 11 pairs of (Part, Quantity)
+'Customer: Zephyr
+'Setup the project at hook 39006 for custom transaction id 6
+
+f.Intrinsic.Control.Try
+	v.Local.sSQL.Declare
+	v.Local.sRet.Declare
+	v.Local.sResult.Declare
+	v.Local.sPart.Declare
+	v.Local.iCnt.Declare
+	v.Local.sQty.Declare
+	v.Local.iHold.Declare
+	v.Local.sDetail.Declare
+	v.Local.sHeader.Declare
+	v.Local.sResultTable.Declare		
+	
+	'Get UserID - and log file
+	F.Intrinsic.String.Build("select Top 1 USER_ID  from V_WIRELESS_HDR where TRANS_ID = '{0}';",V.Passed.DATA-TRANSID,V.Local.sSQL)
+	F.ODBC.Connection!conx.OpenCompanyConnection
+	f.ODBC.Connection!conx.ExecuteAndReturn(v.Local.sSQL,v.Local.sRet)
+	f.Intrinsic.Control.If(v.Ambient.ExecuteAndReturnEOF)
+		f.Intrinsic.String.Build("No User ID found for transaction ID '{0}'",V.Passed.DATA-TRANSID,v.Local.sResult)
+		F.Global.Mobile.SetCustomResult(V.Caller.CompanyCode,V.Passed.DATA-TRANSID,v.Local.sResult)
+		f.Intrinsic.Control.CallSub(Unload)		
+	f.Intrinsic.Control.EndIf
+	v.Global.sUser.Set(v.Local.sRet)
+	
+	'Get data from transaction
+	F.Intrinsic.String.Build("Select * from WIRELESS_LINE where TRANS_ID = '{0}'",V.Passed.DATA-TRANSID,V.Local.sSQL)
+	f.ODBC.Connection!conx.ExecuteAndReturn(v.Local.sSQL,v.Local.sRet)
+	f.Intrinsic.Control.If(v.Ambient.ExecuteAndReturnEOF)
+		f.Intrinsic.String.Build("No data found from Wireless Line for transaction ID '{0}'",V.Passed.DATA-TRANSID,v.Local.sResult)
+		F.Global.Mobile.SetCustomResult(V.Caller.CompanyCode,V.Passed.DATA-TRANSID,v.Local.sResult)
+		f.Intrinsic.Control.CallSub(Unload)		
+	f.Intrinsic.Control.EndIf
+	f.Intrinsic.String.Split(v.Local.sRet,"*!*",v.Local.sRet)
+	
+	'Fields will be from sRet(3) 
+	v.Global.sFromBin.Set(v.Local.sRet(3).Trim)
+	v.Global.sToBin.Set(v.Local.sRet(4).Trim)	
+	
+	'Validate From Bin
+	F.Intrinsic.String.Build("Select BIN from V_BIN_MASTER where BIN = '{0}' AND BIN <> ''",v.Global.sFromBin.PSQLFriendly,V.Local.sSQL)
+	f.ODBC.Connection!Conx.ExecuteAndReturn(v.Local.sSQL,v.Local.sRet)
+	F.Intrinsic.Control.If(v.Ambient.ExecuteAndReturnEOF)
+		f.Intrinsic.String.Build("From Bin: {0} is invalid.",v.Global.sFromBin,v.Local.sResult)
+		F.Global.Mobile.SetCustomResult(V.Caller.CompanyCode,V.Passed.DATA-TRANSID,v.Local.sResult)
+		f.Intrinsic.Control.CallSub(Unload)
+	F.Intrinsic.Control.EndIf	
+	
+	'Validate To Bin
+	F.Intrinsic.String.Build("Select BIN from V_BIN_MASTER where BIN = '{0}' AND BIN <> ''",v.Global.sToBin.PSQLFriendly,V.Local.sSQL)
+	f.ODBC.Connection!Conx.ExecuteAndReturn(v.Local.sSQL,v.Local.sRet)
+	F.Intrinsic.Control.If(v.Ambient.ExecuteAndReturnEOF)
+		f.Intrinsic.String.Build("To Bin: {0} is invalid.",v.Global.sToBin,v.Local.sResult)
+		F.Global.Mobile.SetCustomResult(V.Caller.CompanyCode,V.Passed.DATA-TRANSID,v.Local.sResult)
+		f.Intrinsic.Control.CallSub(Unload)
+	F.Intrinsic.Control.EndIf	
+	
+	f.Data.DataTable.Create("Result",True)
+	f.Data.DataTable.AddColumn("Result","No","String","")
+	f.Data.DataTable.AddColumn("Result","BinFrom","String","")
+	f.Data.DataTable.AddColumn("Result","BinTo","String","")
+	f.Data.DataTable.AddColumn("Result","Part","String","")
+	f.Data.DataTable.AddColumn("Result","Quantity","String","")
+	f.Data.DataTable.AddColumn("Result","Result","String","")
+	f.Data.DataTable.AddColumn("Result","TransID","String","")
+	
+	'Process a Bin to Bin transfer among 11 pairs of Part, Qty
+	f.Intrinsic.Control.For(v.Local.iCnt,5,25,2)
+		v.Local.sPart.Set(v.Local.sRet(v.Local.iCnt).Trim)
+		f.Intrinsic.Math.Add(v.Local.iCnt,1,v.Local.iHold)
+		v.Local.sQty.Set(v.Local.sRet(v.Local.iHold).Trim)
+		f.Intrinsic.Math.Add(v.Global.iPart,1,v.Global.iPart)
+		f.Intrinsic.Control.CallSub(Post_a_Bin_To_Bin,"sPart",v.Local.sPart,"sQty",v.Local.sQty)		
+	f.Intrinsic.Control.Next(v.Local.iCnt)	
+	
+	'Build Result Details Rows
+	f.Intrinsic.StringBuilder.Create("strResult")
+	f.Intrinsic.Control.For(v.Local.iCnt,0,v.DataTable.Result.RowCount--,1)		
+		f.Intrinsic.Control.CallSub("Build_Row_5_Columns","sCell0",v.DataTable.Result(v.Local.iCnt).No!FieldValTrim,"sCell1",v.DataTable.Result(v.Local.iCnt).Part!FieldValTrim,"sCell2",v.DataTable.Result(v.Local.iCnt).Quantity!FieldValTrim,"sCell3",v.DataTable.Result(v.Local.iCnt).Result!FieldValTrim,"sCell4",v.DataTable.Result(v.Local.iCnt).TransID!FieldValTrim)
+		f.Intrinsic.StringBuilder.AppendLine("strResult",v.Args.sRow)
+	f.Intrinsic.Control.Next(v.Local.iCnt)	
+	f.Intrinsic.StringBuilder.ToString("strResult",v.Local.sDetail)
+	f.Intrinsic.StringBuilder.Dispose("strResult")	
+	
+	'Build Header
+	v.Local.sHeader.Set("<tr><th Style#>No</th><th Style#>Part</th><th Style#>Qty</th><th Style#>Result</th><th Style#>TransID</th></tr><tr>")
+	
+	f.Intrinsic.String.Build("<div style="color:blue;">&#128073;  From Bin: {0} To Bin: {1}</div>",v.Global.sFromBin,v.Global.sToBin,v.Global.sTopMessage)
+	'Build result table
+	f.Intrinsic.String.Build("<table >{0}{1}</table>",v.Local.sHeader,v.Local.sDetail,v.Local.sResultTable)
+	f.Intrinsic.String.Replace(v.Local.sResultTable,"Style#","style=" background-color:#F5F5DC; border: 1px solid green;"",v.Local.sResultTable)
+	f.Intrinsic.String.Replace(v.Local.sResultTable,"StyleCenter#","style=" background-color:#F5F5DC; border: 1px solid green; text-align: center"",v.Local.sResultTable)
+	'Build result string
+	f.Intrinsic.String.Build("{0}{1}",v.Global.sTopMessage,v.Local.sResultTable,v.Local.sResultTable)
+	'Send result to device	
+	F.Global.Mobile.SetCustomResult(V.Caller.CompanyCode,V.Passed.DATA-TRANSID,v.Local.sResultTable)	
+	
+f.Intrinsic.Control.Catch
+	f.Intrinsic.Control.CallSub("Catching","sub",v.Ambient.CurrentSubroutine,"callingsub",v.Ambient.SubroutineCalledFrom,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+
+Program.Sub.Post_a_Bin_To_Bin.Start
+f.Intrinsic.Control.Try
+	v.Local.sSQL.Declare
+	v.Local.sPart.Declare
+	v.Local.sRet.Declare
+	v.Local.fCurrentQty.Declare
+	v.Local.fToTransferQty.Declare
+	v.Local.bNum.Declare
+	v.Local.sResult.Declare
+	v.Local.sNextTransactionID.Declare
+	v.Local.sHeaderFlag.Declare
+	v.Local.i1.Declare
+	v.Local.sAuditMsg.Declare
+	V.Local.sQtyToTransfer.Declare
+	v.Local.sTransType.Declare
+	v.Local.sTime.Declare
+	v.Local.sPrinter.Declare
+	v.Local.sLabelPrinter.Declare
+	v.Local.sDefaultPrinter.Declare
+	v.Local.sDate.Declare
+	v.Local.sToday.Declare
+	
+	v.Local.sPart.Set(v.Args.sPart)
+	'Validate if Part is blank
+	f.Intrinsic.Control.If(v.Local.sPart,=,"")
+		f.Data.DataTable.AddRow("Result","No",v.Global.iPart,"BinFrom",v.Global.sFromBin,"BinTo",v.Global.sToBin,"Part",v.Local.sPart,"Quantity",v.Args.sQty,"Result","Blank Part")
+		f.Intrinsic.Control.ExitSub
+	f.Intrinsic.Control.EndIf
+	
+	'Validate Qty
+	f.Intrinsic.Math.IsNumeric(v.Args.sQty,v.Local.bNum)
+	f.Intrinsic.Control.If(v.Local.bNum.Not)		
+		f.Data.DataTable.AddRow("Result","No",v.Global.iPart,"BinFrom",v.Global.sFromBin,"BinTo",v.Global.sToBin,"Part",v.Local.sPart,"Quantity",v.Args.sQty,"Result","Invalid Qty")
+		f.Intrinsic.Control.ExitSub
+	f.Intrinsic.Control.Else
+		v.Local.fToTransferQty.Set(v.Args.sQty)	
+		f.Intrinsic.Control.If(v.Local.fToTransferQty,=,0)
+			f.Data.DataTable.AddRow("Result","No",v.Global.iPart,"BinFrom",v.Global.sFromBin,"BinTo",v.Global.sToBin,"Part",v.Local.sPart,"Quantity",v.Args.sQty,"Result","Invalid Qty")
+			f.Intrinsic.Control.ExitSub
+		f.Intrinsic.Control.EndIf
+	f.Intrinsic.Control.EndIf
+
+	'Validate if there is an item master with the Part with the From Bin and it's quantity
+	F.Intrinsic.String.Build("Select Top 1 Quantity from v_Item_master where Part = '{0}' and Bin = '{1}'  and Lot = '' and Heat = '' and Serial_Number = '' and Allocated <> 'Y'",v.Local.sPart.PSQLFriendly,v.Global.sFromBin.PSQLFriendly,V.Local.sSQL)
+	f.ODBC.Connection!Conx.ExecuteAndReturn(v.Local.sSQL,v.Local.sRet)
+	F.Intrinsic.Control.If(v.Ambient.ExecuteAndReturnEOF)
+		f.Data.DataTable.AddRow("Result","No",v.Global.iPart,"BinFrom",v.Global.sFromBin,"BinTo",v.Global.sToBin,"Part",v.Local.sPart,"Quantity",v.Args.sQty,"Result","Not in From Bin")
+		f.Intrinsic.Control.ExitSub
+		v.Local.sResult.Set("Not in From Bin")	
+	f.Intrinsic.Control.Else
+		v.Local.fCurrentQty.Set(v.Local.sRet)
+		f.Intrinsic.Control.If(v.Local.fToTransferQty,>,v.Local.fCurrentQty)
+			f.Data.DataTable.AddRow("Result","No",v.Global.iPart,"BinFrom",v.Global.sFromBin,"BinTo",v.Global.sToBin,"Part",v.Local.sPart,"Quantity",v.Args.sQty,"Result","Qty Transfer > current")
+			f.Intrinsic.Control.ExitSub
+		f.Intrinsic.Control.EndIf			
+	F.Intrinsic.Control.EndIf
+
+	'Get the next transaction ID
+	f.ODBC.Connection!Conx.ExecuteAndReturn("Select TOP 1 TRANS_ID from WIRELESS_HDR ORDER BY TRANS_ID DESC",v.Local.sRet)
+	F.Intrinsic.Control.If(v.Ambient.ExecuteAndReturnEOF)
+		F.Global.Mobile.SetCustomResult(V.Caller.CompanyCode,V.Passed.DATA-TRANSID,"Cannot find the next transaction ID")	
+		f.Intrinsic.Control.CallSub(Unload)
+	F.Intrinsic.Control.EndIf
+	F.Intrinsic.Math.Add(V.Local.sRet,1,V.Local.sNextTransactionID)
+	F.Intrinsic.String.LPad(V.Local.sNextTransactionID,"0",9,V.Local.sNextTransactionID)
+
+	'Populate the Wirelss_line with the next transaction ID		
+	f.Intrinsic.String.Format(v.Ambient.Date,"YYYYMMDD",v.Local.sToday)
+	f.Intrinsic.String.LPad(v.Global.iPart,"0",2,v.Local.sTime)
+	f.Intrinsic.String.Build("{0}{1}",v.Ambient.Now.FormatHHNNSS,v.Local.sTime,v.Local.sTime)
+
+	'Has to setup all fields for this table as for Zephyr, it does not accept Null value
+	f.ODBC.Connection!Conx.OpenRecordsetRW("rstNew1","SELECT Top 1 * from WIRELESS_LINE")
+	f.ODBC.Conx!rstNew1.AddNew
+	f.ODBC.Conx!rstNew1.Set!TRANS_ID(V.Local.sNextTransactionID)
+	f.ODBC.Conx!rstNew1.Set!SEQ("0000")
+	f.ODBC.Conx!rstNew1.Set!TRANS_TYPE("O90")
+	'PART
+	f.ODBC.Conx!rstNew1.Set!FIELD_1(V.Local.sPart)
+	'LOCATION
+	f.ODBC.Conx!rstNew1.Set!FIELD_2("")		
+	'QUANTITY
+	F.Intrinsic.String.Format(V.Local.fToTransferQty,"####.000000",V.Local.sQtyToTransfer)
+	f.ODBC.Conx!rstNew1.Set!FIELD_3(V.Local.sQtyToTransfer)	
+	'FROM BIN
+	f.ODBC.Conx!rstNew1.Set!FIELD_4(v.Global.sFromBin)
+	'TO BIN
+	f.ODBC.Conx!rstNew1.Set!FIELD_5(v.Global.sToBin)
+	'LOT
+	f.ODBC.Conx!rstNew1.Set!FIELD_6("")
+	'HEAT
+	f.ODBC.Conx!rstNew1.Set!FIELD_7("")	
+	'SERIAL
+	f.ODBC.Conx!rstNew1.Set!FIELD_8("")		
+	'OTHER
+	f.ODBC.Conx!rstNew1.Set!FIELD_9("0000")
+	f.ODBC.Conx!rstNew1.Set!FIELD_10("0000")
+	f.ODBC.Conx!rstNew1.Set!FIELD_11("")
+	f.ODBC.Conx!rstNew1.Set!FIELD_12("1")
+	'TO LOCATION
+	f.ODBC.Conx!rstNew1.Set!FIELD_13("")
+	f.ODBC.Conx!rstNew1.Set!FIELD_14("")	
+	f.ODBC.Conx!rstNew1.Set!FIELD_15("")
+	f.ODBC.Conx!rstNew1.Set!FIELD_16("")
+	f.ODBC.Conx!rstNew1.Set!FIELD_17("")
+	f.ODBC.Conx!rstNew1.Set!FIELD_18("")
+	f.ODBC.Conx!rstNew1.Set!FIELD_19("")
+	f.ODBC.Conx!rstNew1.Set!FIELD_20("")
+	f.ODBC.Conx!rstNew1.Set!FIELD_21("")
+	f.ODBC.Conx!rstNew1.Set!FIELD_22("")
+	f.ODBC.Conx!rstNew1.Set!FIELD_23("")	
+	f.ODBC.Conx!rstNew1.Set!FIELD_24("")
+	f.ODBC.Conx!rstNew1.Set!FIELD_25("")
+	
+	f.ODBC.Conx!rstNew1.Set!REQUIRES_AUDIT("")
+	f.ODBC.Conx!rstNew1.Set!ERROR_ID(0)
+	f.ODBC.Conx!rstNew1.Set!PRINTED("Y")
+	f.ODBC.Conx!rstNew1.Set!FILLER("")
+	f.ODBC.Conx!rstNew1.Set!DATE_LAST_CHG(V.Local.sToday)
+	f.ODBC.Conx!rstNew1.Set!TIME_LAST_CHG(V.Local.sTime)
+	f.ODBC.Conx!rstNew1.Set!LAST_CHG_BY("6713")	
+	
+	F.ODBC.Conx!rstNew1.Update
+	F.ODBC.Conx!rstNew1.Close	
+	
+	'Populate Wireless_Header with the flag to no run
+	'WRITE TO WIRELESS_HDR
+	f.ODBC.Connection!Conx.OpenRecordsetRW("rstNew","SELECT Top 1 * from WIRELESS_HDR")
+	f.ODBC.Conx!rstNew.AddNew
+	f.ODBC.Conx!rstNew.Set!TRANS_ID(V.Local.sNextTransactionID)
+	f.ODBC.Conx!rstNew.Set!TRANS_TYPE("O90")	
+	f.ODBC.Conx!rstNew.Set!SUCCESSFUL_FLAG("")                                                                                                             
+	f.ODBC.Conx!rstNew.Set!ATTEMPTED_FLAG("")
+	f.ODBC.Conx!rstNew.Set!ATTEMPTED_DATE("00000000")
+	f.ODBC.Conx!rstNew.Set!ATTEMPTED_TIME("00000000")
+	f.ODBC.Conx!rstNew.Set!DEFAULT_PRINTER(V.Local.sDefaultPrinter)
+	f.ODBC.Conx!rstNew.Set!LABEL_PRINTER(V.Local.sLabelPrinter)
+	f.ODBC.Conx!rstNew.Set!USER_ID(V.Global.sUser)
+	f.ODBC.Conx!rstNew.Set!BATCH(0)
+	f.ODBC.Conx!rstNew.Set!USE_LABEL_PRINTER("0")
+	f.ODBC.Conx!rstNew.Set!DATE_LAST_CHG(v.Local.sToday)
+	f.ODBC.Conx!rstNew.Set!TIME_LAST_CHG(v.Local.sTime)
+	f.ODBC.Conx!rstNew.Set!LAST_CHG_BY("6713")
+	F.ODBC.Conx!rstNew.Update
+	F.ODBC.Conx!rstNew.Close	
+	
+	'Add Success result
+	f.Data.DataTable.AddRow("Result","No",v.Global.iPart,"BinFrom",v.Global.sFromBin,"BinTo",v.Global.sToBin,"Part",v.Local.sPart,"Quantity",v.Args.sQty,"Result","Success","TransID",v.Local.sNextTransactionID)	
+		
+f.Intrinsic.Control.Catch
+	f.Intrinsic.Control.CallSub("Catching","sub",v.Ambient.CurrentSubroutine,"callingsub",v.Ambient.SubroutineCalledFrom,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.Post_a_Bin_To_Bin.End
+
+Program.Sub.Build_Row_5_Columns.Start
+f.Intrinsic.Control.Try
+	v.Local.sError.Declare
+	v.Local.sRow.Declare
+	
+	'style=" background-color:#F5F5DC; border: 1px solid green;"
+	f.Intrinsic.String.Build("<tr><td style#>{0}</td><td style#>{1}</td><td style#>{2}</td><td style#>{3}</td><td style#>{4}</td></tr>",v.Args.sCell0,v.Args.sCell1,v.Args.sCell2,v.Args.sCell3,v.Args.sCell4,v.Local.sRow)
+	f.Intrinsic.Variable.AddRV("sRow",v.Local.sRow)
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(ErrorMobile,"ScriptFile",V.Caller.ScriptFile,"CurrentSubroutine",V.Ambient.CurrentSubroutine,"TransID",V.Passed.DATA-TRANSID,"FolderName","6238")
+	F.Intrinsic.Control.End
+F.Intrinsic.Control.EndTry
+Program.Sub.Build_Row_5_Columns.End
+
+Program.Sub.Catching.Start
+f.Intrinsic.Control.Try
+	v.Local.sError.Declare
+	
+	f.Intrinsic.String.Build("Subroutine: {1}{0}Called from: {2}{0}Error No :{3}{0}Error Description: {4}{0}GAB Version: {5}{0}GSS Version: {6}",v.Ambient.NewLine,V.Args.Sub,v.Args.CallingSub,v.Args.ErrorNo,v.Args.ErrorDesc,v.Ambient.GABVersion,v.Caller.GSSVersion,v.Local.sError)
+	f.Intrinsic.String.Build("{0}: Transaction ID: {1}{2}{3}",v.Ambient.Now,V.Passed.DATA-TRANSID,v.Ambient.NewLine,v.Local.sError,v.Local.sError)
+	f.Intrinsic.Control.CallSub(Log,"sLogLine",v.Local.sError)
+	f.Intrinsic.Control.CallSub(Unload)
+	
+f.Intrinsic.Control.Catch
+	f.Intrinsic.Control.End
+f.Intrinsic.Control.EndTry
+Program.Sub.Catching.End
+
+Program.Sub.Log.Start
+f.Intrinsic.Control.Try
+	v.Local.sLogFile.Declare
+	v.Local.bEx.Declare
+	v.Local.sContent.Declare
+	v.Local.sLogLine.Declare
+	v.Local.sFolder.Declare
+	
+	'Check foler
+	f.Intrinsic.String.Build("{0}\Custom\6713\{1}",v.Caller.GlobalDir,v.Caller.CompanyCode,v.Ambient.Date.FormatYYYYMMDD,v.Local.sFolder)
+	f.Intrinsic.File.DirExists(v.Local.sFolder,v.Local.bEx)
+	f.Intrinsic.Control.If(v.Local.bEx.Not)
+		f.Intrinsic.File.CreateDir(v.Local.sFolder)
+	f.Intrinsic.Control.EndIf
+	'Check existing file
+	f.Intrinsic.String.Build("{0}\Custom\6713\{1}\{2}_{3}.txt",v.Caller.GlobalDir,v.Caller.CompanyCode,v.Ambient.Date.FormatYYYYMMDD,v.Global.sUser,v.Local.sLogFile)
+	f.Intrinsic.File.Exists(v.Local.sLogFile,v.Local.bEx)
+	f.Intrinsic.Control.If(v.Local.bEx)
+		f.Intrinsic.File.File2String(v.Local.sLogFile,v.Local.sContent)	
+	f.Intrinsic.Control.EndIf
+	
+	v.Local.sLogLine.Set(v.Args.sLogLine)
+	f.Intrinsic.String.Build("{0}{1}{2}",v.Local.sContent,v.Ambient.NewLine,v.Local.sLogLine,v.Local.sContent)	
+	f.Intrinsic.File.String2File(v.Local.sLogFile,v.Local.sContent)
+	
+f.Intrinsic.Control.Catch
+	f.Intrinsic.Control.End
+f.Intrinsic.Control.EndTry
+
+Program.Sub.Log.End
+
+Program.Sub.Unload.Start
+f.Intrinsic.Control.Try
+	
+	f.Intrinsic.Control.If(v.ODBC.Conx.Exists)
+		f.ODBC.Connection!conx.Close
+	f.Intrinsic.Control.EndIf
+	f.Intrinsic.Control.End
+
+f.Intrinsic.Control.Catch
+	f.Intrinsic.Control.End
+f.Intrinsic.Control.EndTry
+Program.Sub.Unload.End
+
+Program.Sub.Comments.Start
+${$5$}$3.0.0.0$}$1
+${$6$}$bnguyen$}$20220524121435934$}$tqzwddZCkmoVRWHEL6DZymEEseDhOdziTqKUqTa1fexk8hrVFAV5/b6fNgiJa79qAvq4BQWPABY=
+Program.Sub.Comments.End
